@@ -147,46 +147,63 @@ class GridController(ControllerBase):
         if len(not_trading_positions) > 0:
             initial_margin = not_trading_positions[0].config.amount * self.config.entry_price * self.config.levels / self.config.leverage
             # INITIAL MARGIN CHANGED, STOP THE POSITIONs (System should create new ones)
-            self.logger().info(f"Initial margin changed from {initial_margin} to {self.config.initial_margin} ")
             if self.config.initial_margin != initial_margin:
-                entry_price = self.get_entry_price()
-                order_amount = self.config.initial_margin * self.config.leverage / self.config.levels / entry_price
+                self.logger().info(f"Initial margin changed from {initial_margin} to {self.config.initial_margin} ")
                 for i in range(0, len(not_trading_positions), 1):
                     actions.append(StopExecutorAction(controller_id = self.config.id, executor_id = not_trading_positions[i].id))
-                    # As we use active executers, after stop we need to create new one
-                    actions.append(CreateExecutorAction(controller_id = self.config.id, executor_config = self.get_executor_config(not_trading_positions[i].config.entry_price, order_amount)))
         return actions
 
+    def get_level_entry_price(self, level_id: int) -> Decimal:
+        if level_id == 0:
+            return self.get_entry_price()
+        return self.get_level_entry_price(level_id-1) * Decimal(1 - self.config.step)
 
-    
     def create_actions_proposal(self) -> List[CreateExecutorAction]:
         create_actions = []
         all_executors = self.get_all_executors()
 
         active_positions = self.filter_executors(executors=all_executors, filter_func=lambda x: x.is_active)
         
+        self.logger().info(f"----------------------TICK--------------------------")
+        
+        # # LEVEL |ENTRY PRICE|AMOUNT VALIDATION
+        # for executor in active_positions:
+        #     self.logger().info(f"Active: {executor.config.level_id} | {executor.config.amount} | {executor.config.entry_price} {self.get_level_entry_price(int(executor.config.level_id))}")
+
         entry_price = self.get_entry_price()
         order_amount = self.config.initial_margin * self.config.leverage / self.config.levels / entry_price
 
         # IF no executors running start the bot
         if len(all_executors) == 0:
             for i in range(0, self.config.levels, 1):
-                create_actions.append(CreateExecutorAction(controller_id = self.config.id, executor_config = self.get_executor_config(entry_price, order_amount)))
-                entry_price = entry_price * Decimal(1 - self.config.step)
-        
-        # IF some executor terminated, thant start one with the same configurations again
-        completed_executors = self.filter_executors(executors = active_positions, filter_func = lambda x: x.is_done)
-        if len(completed_executors) > 0 and len(active_positions) < self.config.levels:
-            close_executor = max(completed_executors, default = None, key = lambda x: x.close_timestamp)
-            self.logger().info(f"Restarting: {close_executor.id}, {close_executor.config.entry_price}")
-            create_actions.append(CreateExecutorAction(controller_id = self.config.id, executor_config = self.get_executor_config(close_executor.config.entry_price, order_amount)))
+                create_actions.append(CreateExecutorAction(controller_id = self.config.id,  executor_config = self.get_executor_config(self.get_level_entry_price(i), order_amount, i)))
+        else:
+            # Check if there is at least one executor per each level
+            if len(active_positions) < self.config.levels:
+                self.logger().info("Missing Level Somewhere: " )
+                for i in range(0, self.config.levels, 1):
+                    level_positions = self.filter_executors(executors = active_positions, filter_func = lambda x: x.config.level_id == str(i))
+                    if len(level_positions) == 0:
+                        self.logger().info(f"Missing level: {i} | {self.get_level_entry_price(i)}")
+                        create_actions.append(CreateExecutorAction(controller_id = self.config.id, executor_config = self.get_executor_config(self.get_level_entry_price(i), order_amount, i)))
 
         # Trailing if the condition is met
         top_executor = max(active_positions, default = None, key = lambda x: x.config.entry_price)
-        if not top_executor is None and not top_executor.is_trading and time.time() - top_executor.timestamp > self.config.executor_refresh_time:
+        if not top_executor is None and not top_executor.is_trading and time.time() - top_executor.timestamp > self.config.executor_refresh_time: 
             self.logger().info("Trailing: Creating")
-            create_actions.append(CreateExecutorAction(controller_id = self.config.id, executor_config = self.get_executor_config(top_executor.config.entry_price * Decimal(1 + self.config.step), top_executor.config.amount)))
+            create_actions.append(CreateExecutorAction(controller_id = self.config.id, executor_config = self.get_executor_config(top_executor.config.entry_price * Decimal(1 + self.config.step), top_executor.config.amount, 0)))
+            for executor in active_positions:
+                executor.config.level_id = str(int(executor.config.level_id) + 1)
             asyncio.create_task(self.update_yml(top_executor.config.entry_price * Decimal(1 + self.config.step)))
+        
+        
+        
+        # # TODO DELETE THIS MESS FOR TESTING BELLOW
+        # #Get active_position with level_id 2
+        # position_to_delete = self.filter_executors(executors = active_positions, filter_func = lambda x: x.config.level_id == '2')
+        # if len(position_to_delete) > 0 and time.time() - position_to_delete[0].timestamp > (self.config.executor_refresh_time / 6): # TODO REALLY DELETE THIS DIVISION
+        #     self.logger().info(f"TESTING DELETE 3rd Active: {position_to_delete[0].config.level_id} | {position_to_delete[0].config.amount} | {position_to_delete[0].config.entry_price} {self.get_level_entry_price(int(position_to_delete[0].config.level_id))}")
+        #     create_actions.append(StopExecutorAction(controller_id = self.config.id, executor_id = position_to_delete[0].id))
 
         return create_actions
     
@@ -216,8 +233,9 @@ class GridController(ControllerBase):
             with open(full_path, 'w+') as file:
                 yaml.dump(config_data, file)
     
-    def get_executor_config(self, entry_price: Decimal, order_amount: Decimal) -> PositionExecutorConfig:
+    def get_executor_config(self, entry_price: Decimal, order_amount: Decimal, level_id: str) -> PositionExecutorConfig:
         return PositionExecutorConfig(
+            level_id = level_id,
             timestamp = time.time(),
             trading_pair = self.config.trading_pair,
             connector_name = self.config.connector_name,
