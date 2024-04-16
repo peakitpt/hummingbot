@@ -128,22 +128,48 @@ class GridController(ControllerBase):
     def get_all_executors(self) -> List[ExecutorInfo]:
         return self.filter_executors(executors = self.executors_info, filter_func = lambda x: x.trading_pair == self.config.trading_pair and x.side == TradeType.BUY and x.type == "position_executor")
     
+    def get_entry_price(self) -> Decimal:
+        order_price = 0
+        if self.config.entry_price > 0:
+            order_price = self.config.entry_price
+        else:
+            order_price = self.market_data_provider.get_price_by_type(self.config.connector_name, self.config.trading_pair, PriceType.MidPrice)
+            asyncio.create_task(self.update_yml(order_price))
+
+        return order_price
+
+    def check_if_positions_match_initial_margin(self, active_executors) -> List[CreateExecutorAction]:
+        actions = []
+         # IF ANY ACTIVE POSITION, VALIDATE IF THE INITIAL MARGIN THAT THE POSITION WAS MADE BASED ON HAS NOT CHANGED
+        not_trading_positions = self.filter_executors(executors=active_executors, filter_func=lambda x: not x.is_trading)
+        # Check if initial margin has changed in first open position
+        
+        if len(not_trading_positions) > 0:
+            initial_margin = not_trading_positions[0].config.amount * self.config.entry_price * self.config.levels / self.config.leverage
+            # INITIAL MARGIN CHANGED, STOP THE POSITIONs (System should create new ones)
+            self.logger().info(f"Initial margin changed from {initial_margin} to {self.config.initial_margin} ")
+            if self.config.initial_margin != initial_margin:
+                entry_price = self.get_entry_price()
+                order_amount = self.config.initial_margin * self.config.leverage / self.config.levels / entry_price
+                for i in range(0, len(not_trading_positions), 1):
+                    actions.append(StopExecutorAction(controller_id = self.config.id, executor_id = not_trading_positions[i].id))
+                    # As we use active executers, after stop we need to create new one
+                    actions.append(CreateExecutorAction(controller_id = self.config.id, executor_config = self.get_executor_config(not_trading_positions[i].config.entry_price, order_amount)))
+        return actions
+
+
+    
     def create_actions_proposal(self) -> List[CreateExecutorAction]:
         create_actions = []
         all_executors = self.get_all_executors()
 
         active_positions = self.filter_executors(executors=all_executors, filter_func=lambda x: x.is_active)
+        
+        entry_price = self.get_entry_price()
+        order_amount = self.config.initial_margin * self.config.leverage / self.config.levels / entry_price
+
         # IF no executors running start the bot
         if len(all_executors) == 0:
-            if self.config.entry_price > 0:
-                order_price = self.config.entry_price
-            else:
-                order_price = self.market_data_provider.get_price_by_type(self.config.connector_name, self.config.trading_pair, PriceType.MidPrice)
-                asyncio.create_task(self.update_yml(order_price))
-
-            order_amount = self.config.initial_margin * self.config.leverage / self.config.levels / order_price
-            entry_price = order_price
-            
             for i in range(0, self.config.levels, 1):
                 create_actions.append(CreateExecutorAction(controller_id = self.config.id, executor_config = self.get_executor_config(entry_price, order_amount)))
                 entry_price = entry_price * Decimal(1 - self.config.step)
@@ -153,7 +179,7 @@ class GridController(ControllerBase):
         if len(completed_executors) > 0 and len(active_positions) < self.config.levels:
             close_executor = max(completed_executors, default = None, key = lambda x: x.close_timestamp)
             self.logger().info(f"Restarting: {close_executor.id}, {close_executor.config.entry_price}")
-            create_actions.append(CreateExecutorAction(controller_id = self.config.id, executor_config = self.get_executor_config(close_executor.config.entry_price, close_executor.config.amount)))
+            create_actions.append(CreateExecutorAction(controller_id = self.config.id, executor_config = self.get_executor_config(close_executor.config.entry_price, order_amount)))
 
         # Trailing if the condition is met
         top_executor = max(active_positions, default = None, key = lambda x: x.config.entry_price)
@@ -174,6 +200,8 @@ class GridController(ControllerBase):
             self.logger().info("Trailing: Removing last")
             bot_executor = min(active_executors, key = lambda x: x.config.entry_price)
             stop_actions.append(StopExecutorAction(controller_id = self.config.id, executor_id = bot_executor.id))
+
+        stop_actions.extend(self.check_if_positions_match_initial_margin(active_executors = active_executors))
 
         return stop_actions
 
