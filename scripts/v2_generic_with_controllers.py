@@ -1,3 +1,5 @@
+import asyncio
+from decimal import Decimal
 import os
 from typing import Dict, List, Set
 
@@ -36,10 +38,16 @@ class GenericV2StrategyWithControllers(StrategyV2Base):
     def stop_actions_proposal(self) -> List[StopExecutorAction]:
         return []
 
+    async def get_account(self, config_dict) -> None:
+        account = await self.connectors[config_dict["connector_name"]]._api_get(path_url='v2/account', is_auth_required=True)
+        maintenance_margin = round((Decimal(account.get('totalMaintMargin')) / Decimal(account.get('totalMarginBalance'))) * 100, 2)
+        self.logger().info(f"Account_data: {maintenance_margin}% | {Decimal(account.get('availableBalance'))} | {Decimal(account.get('maxWithdrawAmount'))} | {Decimal(account.get('totalCrossUnPnl'))}")
+        
     def apply_initial_setting(self):
         for controller_id, controller in self.controllers.items():
             config_dict = controller.config.dict()
             if self.is_perpetual(config_dict.get("connector_name")):
+                asyncio.create_task(self.get_account(config_dict))
                 if "position_mode" in config_dict:
                     self.connectors[config_dict["connector_name"]].set_position_mode(config_dict["position_mode"])
                 if "leverage" in config_dict:
