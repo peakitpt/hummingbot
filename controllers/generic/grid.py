@@ -104,6 +104,14 @@ class GridConfig(ControllerConfigBase):
           is_updatable=True,
         prompt=lambda mi: "Enter the check time interval in secconds (e.g. 10) ",
         prompt_on_new=True))
+    
+    # Flag to indicate if pair is able to run
+    # If False disabled by user or another type of limit on main strategy
+    is_enabled: bool = Field( 
+      default=True, 
+      client_data=ClientFieldData(
+          is_updatable=True,
+        prompt_on_new=False))
 
     @property
     def triple_barrier_config(self) -> TripleBarrierConfig:
