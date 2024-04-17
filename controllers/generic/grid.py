@@ -91,6 +91,21 @@ class GridConfig(ControllerConfigBase):
         )
     )
 
+    
+    checks_offset: int = Field(
+      default=0, ge=0,
+      client_data=ClientFieldData(
+          is_updatable=True,
+        prompt=lambda mi: "Enter the check time offset in secconds (e.g. 0) ",
+        prompt_on_new=True))
+    
+    checks_interval: int = Field(
+      default=10, gt=0,
+      client_data=ClientFieldData(
+          is_updatable=True,
+        prompt=lambda mi: "Enter the check time interval in secconds (e.g. 10) ",
+        prompt_on_new=True))
+
     @property
     def triple_barrier_config(self) -> TripleBarrierConfig:
         return TripleBarrierConfig(
@@ -110,9 +125,14 @@ class GridController(ControllerBase):
 
     closed_executors_buffer: int = 5
 
+    start_time: int = 0
+
     def __init__(self, config: GridConfig, *args, **kwargs):
         super().__init__(config, *args, **kwargs)
         self.config = config
+
+        self.start_time = int(time.time())
+
         self.logger().info("Start GRID controller")
         
     def determine_executor_actions(self) -> List[ExecutorAction]:
@@ -128,40 +148,75 @@ class GridController(ControllerBase):
     def get_all_executors(self) -> List[ExecutorInfo]:
         return self.filter_executors(executors = self.executors_info, filter_func = lambda x: x.trading_pair == self.config.trading_pair and x.side == TradeType.BUY and x.type == "position_executor")
     
+
+    def get_entry_price(self, update_file = False) -> Decimal:
+        entry_price = 0
+        if self.config.entry_price > 0:
+            entry_price = self.config.entry_price
+        else:
+            entry_price = self.market_data_provider.get_price_by_type(self.config.connector_name, self.config.trading_pair, PriceType.MidPrice)
+            if update_file:
+                asyncio.create_task(self.update_yml(entry_price))
+
+        return entry_price
+
+    def check_if_positions_match_initial_margin(self, active_executors) -> List[CreateExecutorAction]:
+        actions = []
+         # IF ANY ACTIVE POSITION, VALIDATE IF THE INITIAL MARGIN THAT THE POSITION WAS MADE BASED ON HAS NOT CHANGED
+        not_trading_positions = self.filter_executors(executors=active_executors, filter_func=lambda x: not x.is_trading)
+        # Check if initial margin has changed in first open position
+        
+        if len(not_trading_positions) > 0:
+            initial_margin = round(not_trading_positions[0].config.amount * self.get_entry_price() * self.config.levels / self.config.leverage)
+            # INITIAL MARGIN CHANGED, STOP THE POSITIONs (System should create new ones)
+            if self.config.initial_margin != initial_margin:
+                self.logger().info(f"Initial margin changed from {initial_margin} to {self.config.initial_margin} ")
+                for i in range(0, len(not_trading_positions), 1):
+                    actions.append(StopExecutorAction(controller_id = self.config.id, executor_id = not_trading_positions[i].id))
+        return actions
+
+    def get_level_entry_price(self, level_id: int) -> Decimal:
+        if level_id == 0:
+            return self.get_entry_price()
+        return self.get_level_entry_price(level_id-1) * Decimal(1 - self.config.step)
+
     def create_actions_proposal(self) -> List[CreateExecutorAction]:
         create_actions = []
         all_executors = self.get_all_executors()
 
         active_positions = self.filter_executors(executors=all_executors, filter_func=lambda x: x.is_active)
-        # IF no executors running start the bot
-        if len(all_executors) == 0:
-            if self.config.entry_price > 0:
-                order_price = self.config.entry_price
-            else:
-                order_price = self.market_data_provider.get_price_by_type(self.config.connector_name, self.config.trading_pair, PriceType.MidPrice)
-                asyncio.create_task(self.update_yml(order_price))
 
-            order_amount = self.config.initial_margin * self.config.leverage / self.config.levels / order_price
-            entry_price = order_price
-            
-            for i in range(0, self.config.levels, 1):
-                create_actions.append(CreateExecutorAction(controller_id = self.config.id, executor_config = self.get_executor_config(entry_price, order_amount)))
-                entry_price = entry_price * Decimal(1 - self.config.step)
         
-        # IF some executor terminated, thant start one with the same configurations again
-        completed_executors = self.filter_executors(executors = active_positions, filter_func = lambda x: x.is_done)
-        if len(completed_executors) > 0 and len(active_positions) < self.config.levels:
-            close_executor = max(completed_executors, default = None, key = lambda x: x.close_timestamp)
-            self.logger().info(f"Restarting: {close_executor.id}, {close_executor.config.entry_price}")
-            create_actions.append(CreateExecutorAction(controller_id = self.config.id, executor_config = self.get_executor_config(close_executor.config.entry_price, close_executor.config.amount)))
+        current_tick_count = int(time.time()) - self.start_time
+        
+        # self.logger().info(f"---------TICK------- Active: {len(active_positions)} {self.config.trading_pair} { current_tick_count } {self.start_time} " )
+        # # LEVEL |ENTRY PRICE|AMOUNT VALIDATION
+        # for executor in active_positions:
+        #     self.logger().info(f"Active: {executor.config.level_id} | {executor.config.amount} | {executor.config.entry_price} {self.get_level_entry_price(int(executor.config.level_id))}")
+
+
+        # Check if there is at least one executor per each level
+        if (self.config.checks_offset + current_tick_count) % self.config.checks_interval == 0:
+            entry_price = self.get_entry_price(update_file=True)
+            # self.logger().info("Check levels")
+            if len(active_positions) < self.config.levels:
+                order_amount = self.config.initial_margin * self.config.leverage / self.config.levels / entry_price
+                # self.logger().info("Missing Level Somewhere: " )
+                for i in range(0, self.config.levels, 1):
+                    level_positions = self.filter_executors(executors = active_positions, filter_func = lambda x: x.config.level_id == str(i))
+                    if len(level_positions) == 0:
+                        # self.logger().info(f"Missing level: {i} | {self.get_level_entry_price(i)}")
+                        create_actions.append(CreateExecutorAction(controller_id = self.config.id, executor_config = self.get_executor_config(self.get_level_entry_price(i), order_amount, i)))
 
         # Trailing if the condition is met
         top_executor = max(active_positions, default = None, key = lambda x: x.config.entry_price)
-        if not top_executor is None and not top_executor.is_trading and time.time() - top_executor.timestamp > self.config.executor_refresh_time:
-            self.logger().info("Trailing: Creating")
-            create_actions.append(CreateExecutorAction(controller_id = self.config.id, executor_config = self.get_executor_config(top_executor.config.entry_price * Decimal(1 + self.config.step), top_executor.config.amount)))
+        if not top_executor is None and not top_executor.is_trading and time.time() - top_executor.timestamp > self.config.executor_refresh_time: 
+            # self.logger().info("Trailing: Creating")
+            create_actions.append(CreateExecutorAction(controller_id = self.config.id, executor_config = self.get_executor_config(top_executor.config.entry_price * Decimal(1 + self.config.step), top_executor.config.amount, 0)))
+            for executor in active_positions:
+                executor.config.level_id = str(int(executor.config.level_id) + 1)
             asyncio.create_task(self.update_yml(top_executor.config.entry_price * Decimal(1 + self.config.step)))
-
+   
         return create_actions
     
     def stop_actions_proposal(self) -> List[StopExecutorAction]:
@@ -171,16 +226,20 @@ class GridController(ControllerBase):
         # CLOSE last executor when trailing
         active_executors = self.filter_executors(executors=all_executors, filter_func=lambda x: x.is_active)
         if len(active_executors) > self.config.levels:
-            self.logger().info("Trailing: Removing last")
+
+            # self.logger().info("Trailing: Removing last")
             bot_executor = min(active_executors, key = lambda x: x.config.entry_price)
             stop_actions.append(StopExecutorAction(controller_id = self.config.id, executor_id = bot_executor.id))
 
+        stop_actions.extend(self.check_if_positions_match_initial_margin(active_executors = active_executors))
         return stop_actions
 
 
     async def update_yml(self, entry_price):
         if entry_price > 0:
-            self.logger().info(f"Updating yaml")
+
+            # self.logger().info(f"Updating yaml {self.config.config_file_name} with {entry_price} on {self.config.trading_pair}")
+
             full_path = os.path.join(settings.CONTROLLERS_CONF_DIR_PATH, self.config.config_file_name)
             with open(full_path, 'r') as file:
                 config_data = yaml.safe_load(file)
@@ -188,8 +247,10 @@ class GridController(ControllerBase):
             with open(full_path, 'w+') as file:
                 yaml.dump(config_data, file)
     
-    def get_executor_config(self, entry_price: Decimal, order_amount: Decimal) -> PositionExecutorConfig:
+
+    def get_executor_config(self, entry_price: Decimal, order_amount: Decimal, level_id: str) -> PositionExecutorConfig:
         return PositionExecutorConfig(
+            level_id = level_id,
             timestamp = time.time(),
             trading_pair = self.config.trading_pair,
             connector_name = self.config.connector_name,
