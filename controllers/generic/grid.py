@@ -141,10 +141,22 @@ class GridController(ControllerBase):
         
     def determine_executor_actions(self) -> List[ExecutorAction]:
         actions = []
-        actions.extend(self.create_actions_proposal())
-        actions.extend(self.stop_actions_proposal())
+        if self.config.is_enabled:
+            actions.extend(self.create_actions_proposal())
+            actions.extend(self.stop_actions_proposal())
+        else:
+            actions.extend(self.panic_close_all())
         return actions
     
+    
+    def panic_close_all(self) -> List[StopExecutorAction]:
+        stop_actions = []
+        all_executors = self.get_all_executors()
+        active_positions = self.filter_executors(executors=all_executors, filter_func=lambda x: x.is_active)
+        for executor in active_positions:
+            stop_actions.append(StopExecutorAction(controller_id = self.config.id, executor_id = executor.id))
+        return stop_actions
+        
     async def update_processed_data(self):
         reference_price = self.market_data_provider.get_price_by_type(self.config.connector_name, self.config.trading_pair, PriceType.MidPrice)
         self.processed_data = {"reference_price": reference_price, "spread_multiplier": Decimal("1")}
