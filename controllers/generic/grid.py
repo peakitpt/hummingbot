@@ -90,6 +90,7 @@ class GridConfig(ControllerConfigBase):
             prompt_on_new=True
         )
     )
+
     
     checks_offset: int = Field(
       default=0, ge=0,
@@ -123,12 +124,15 @@ class GridConfig(ControllerConfigBase):
 class GridController(ControllerBase):
 
     closed_executors_buffer: int = 5
+
     start_time: int = 0
 
     def __init__(self, config: GridConfig, *args, **kwargs):
         super().__init__(config, *args, **kwargs)
         self.config = config
+
         self.start_time = int(time.time())
+
         self.logger().info("Start GRID controller")
         
     def determine_executor_actions(self) -> List[ExecutorAction]:
@@ -144,6 +148,7 @@ class GridController(ControllerBase):
     def get_all_executors(self) -> List[ExecutorInfo]:
         return self.filter_executors(executors = self.executors_info, filter_func = lambda x: x.trading_pair == self.config.trading_pair and x.side == TradeType.BUY and x.type == "position_executor")
     
+
     def get_entry_price(self, update_file = False) -> Decimal:
         entry_price = 0
         if self.config.entry_price > 0:
@@ -180,6 +185,7 @@ class GridController(ControllerBase):
         all_executors = self.get_all_executors()
 
         active_positions = self.filter_executors(executors=all_executors, filter_func=lambda x: x.is_active)
+
         
         current_tick_count = int(time.time()) - self.start_time
         
@@ -210,7 +216,7 @@ class GridController(ControllerBase):
             for executor in active_positions:
                 executor.config.level_id = str(int(executor.config.level_id) + 1)
             asyncio.create_task(self.update_yml(top_executor.config.entry_price * Decimal(1 + self.config.step)))
-        
+   
         return create_actions
     
     def stop_actions_proposal(self) -> List[StopExecutorAction]:
@@ -220,18 +226,20 @@ class GridController(ControllerBase):
         # CLOSE last executor when trailing
         active_executors = self.filter_executors(executors=all_executors, filter_func=lambda x: x.is_active)
         if len(active_executors) > self.config.levels:
+
             # self.logger().info("Trailing: Removing last")
             bot_executor = min(active_executors, key = lambda x: x.config.entry_price)
             stop_actions.append(StopExecutorAction(controller_id = self.config.id, executor_id = bot_executor.id))
 
         stop_actions.extend(self.check_if_positions_match_initial_margin(active_executors = active_executors))
-
         return stop_actions
 
 
     async def update_yml(self, entry_price):
         if entry_price > 0:
+
             # self.logger().info(f"Updating yaml {self.config.config_file_name} with {entry_price} on {self.config.trading_pair}")
+
             full_path = os.path.join(settings.CONTROLLERS_CONF_DIR_PATH, self.config.config_file_name)
             with open(full_path, 'r') as file:
                 config_data = yaml.safe_load(file)
@@ -239,6 +247,7 @@ class GridController(ControllerBase):
             with open(full_path, 'w+') as file:
                 yaml.dump(config_data, file)
     
+
     def get_executor_config(self, entry_price: Decimal, order_amount: Decimal, level_id: str) -> PositionExecutorConfig:
         return PositionExecutorConfig(
             level_id = level_id,
