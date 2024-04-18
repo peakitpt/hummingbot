@@ -1,10 +1,12 @@
 import time
 import asyncio
 from decimal import Decimal
-from typing import List
+from typing import List, Tuple
 import os
 from hummingbot.client import settings
 import yaml
+from hummingbot.core.event.event_forwarder import SourceInfoEventForwarder
+from hummingbot.core.event.events import MarketEvent
 from pydantic import Field, validator
 
 from hummingbot.client.config.config_data_types import ClientFieldData
@@ -139,12 +141,64 @@ class GridController(ControllerBase):
 
     closed_executors_buffer: int = 5
     start_time: int = 0
+    load_levels: bool = True # True to run on first tick, then will be reset
+    load_trailing: bool = True # True to run on first tick, then will be reset
 
     def __init__(self, config: GridConfig, *args, **kwargs):
         super().__init__(config, *args, **kwargs)
         self.config = config
         self.start_time = int(time.time())
         self.logger().info("Start GRID controller")
+        # self.market_data_provider.connectors[0]
+        
+        self._complete_sell_order_forwarder = SourceInfoEventForwarder(self.process_order_completed_event)
+        self._event_pairs: List[Tuple[MarketEvent, SourceInfoEventForwarder]] = [
+            (MarketEvent.OrderCancelled, self._complete_sell_order_forwarder),
+            (MarketEvent.OrderFilled, self._complete_sell_order_forwarder), # Needed?
+            # (MarketEvent.BuyOrderCompleted, self._complete_sell_order_forwarder), # No need to check
+            (MarketEvent.SellOrderCompleted, self._complete_sell_order_forwarder), # On sell need to check trail and levels
+            (MarketEvent.OrderFailure, self._complete_sell_order_forwarder), # Recreate level if failed?
+        ]
+
+        for connector in self.market_data_provider.connectors.values():
+            for event_pair in self._event_pairs:
+                connector.add_listener(event_pair[0], event_pair[1])
+
+    def process_order_completed_event(self, event_tag: int, market, evt):
+        # check event_tag for type
+        event_trading_pair = None
+        current_event = MarketEvent(event_tag)
+        
+        # SellOrderCompleted | BuyOrderCompleted - base_asset + _ +  quote_asset = trading_pair
+        if current_event == MarketEvent.BuyOrderCompleted or current_event == MarketEvent.SellOrderCompleted:
+            event_trading_pair = evt.base_asset + "-" + evt.quote_asset
+        else:
+            if current_event != MarketEvent.OrderCancelled:
+                event_trading_pair = evt.trading_pair
+        
+
+        self.logger().info(f"Logged event {event_tag} | {event_trading_pair} | {self.config.trading_pair} | {evt}")
+
+        # IF IS THIS PAIR OR CANCELLED( WICH DOES NOT RETURN PAIR) CHECK EVENT
+        if event_trading_pair == self.config.trading_pair or current_event == MarketEvent.OrderCancelled:
+        
+            if current_event == MarketEvent.OrderCancelled:
+                self.logger().info(f"A ORDER WAS CANCELED ")
+                self.load_levels = True
+            
+            if current_event == MarketEvent.OrderFailure:
+                self.load_levels = True
+                self.logger().info(f"A ORDER FAILED ")
+
+            if current_event == MarketEvent.OrderFilled:
+                self.load_levels = True
+                self.logger().info(f"A ORDER WAS FILLED ")
+                
+            if current_event == MarketEvent.SellOrderCompleted:
+                self.logger().info(f"A position was sold, recreate levels")
+                self.load_levels = True
+                self.load_trailing = True
+        
         
     def determine_executor_actions(self) -> List[ExecutorAction]:
         actions = []
@@ -153,6 +207,7 @@ class GridController(ControllerBase):
             actions.extend(self.stop_actions_proposal())
         else:
             actions.extend(self.panic_close_all())
+            
         return actions
 
     def panic_close_all(self) -> List[StopExecutorAction]:
@@ -203,20 +258,23 @@ class GridController(ControllerBase):
 
     def create_actions_proposal(self) -> List[CreateExecutorAction]:
         create_actions = []
-        current_tick_count = int(time.time()) - self.start_time
+        if self.load_levels or self.load_trailing:
+            # # LEVEL |ENTRY PRICE|AMOUNT VALIDATION
+            # for executor in active_positions:
+            #     self.logger().info(f"Active: {executor.config.level_id} | {executor.config.amount} | {executor.config.entry_price} {self.get_level_entry_price(int(executor.config.level_id))}")
+            current_tick_count = int(time.time()) - self.start_time
 
-        all_executors = self.get_all_executors()
-        active_positions = self.filter_executors(executors=all_executors, filter_func=lambda x: x.is_active)
-        
-        # self.logger().info(f"---------TICK------- Active: {len(active_positions)} {self.config.trading_pair} { current_tick_count } {self.start_time} " )
-        # # LEVEL |ENTRY PRICE|AMOUNT VALIDATION
-        # for executor in active_positions:
-        #     self.logger().info(f"Active: {executor.config.level_id} | {executor.config.amount} | {executor.config.entry_price} {self.get_level_entry_price(int(executor.config.level_id))}")
-
-        if (self.config.checks_offset + current_tick_count) % self.config.checks_interval == 0:
-            create_actions.extend(self.make_missing_levels_actions(active_positions))
-
-        create_actions.extend(self.make_trailing_actions(active_positions))
+            all_executors = self.get_all_executors()
+            active_positions = self.filter_executors(executors=all_executors, filter_func=lambda x: x.is_active)
+            
+            self.logger().info(f"---------TICK------- { current_tick_count } Active: {len(active_positions)} {self.config.trading_pair} " )
+            if self.load_levels:
+                self.load_levels = False
+                create_actions.extend(self.make_missing_levels_actions(active_positions))
+            else: 
+                self.load_trailing = False
+                create_actions.extend(self.make_trailing_actions(active_positions))
+    
         return create_actions
     
     def make_missing_levels_actions(self, active_positions) -> List[CreateExecutorAction]:        
