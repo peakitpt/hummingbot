@@ -208,7 +208,7 @@ class GridController(ControllerBase):
         all_executors = self.get_all_executors()
         active_positions = self.filter_executors(executors=all_executors, filter_func=lambda x: x.is_active)
         
-        self.logger().info(f"---------TICK------- Active: {len(active_positions)} {self.config.trading_pair} { current_tick_count } {self.start_time} " )
+        # self.logger().info(f"---------TICK------- Active: {len(active_positions)} {self.config.trading_pair} { current_tick_count } {self.start_time} " )
         # # LEVEL |ENTRY PRICE|AMOUNT VALIDATION
         # for executor in active_positions:
         #     self.logger().info(f"Active: {executor.config.level_id} | {executor.config.amount} | {executor.config.entry_price} {self.get_level_entry_price(int(executor.config.level_id))}")
