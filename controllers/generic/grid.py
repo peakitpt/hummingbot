@@ -1,10 +1,12 @@
 import time
 import asyncio
 from decimal import Decimal
-from typing import List
+from typing import List, Tuple
 import os
 from hummingbot.client import settings
 import yaml
+from hummingbot.core.event.event_forwarder import SourceInfoEventForwarder
+from hummingbot.core.event.events import MarketEvent
 from pydantic import Field, validator
 
 from hummingbot.client.config.config_data_types import ClientFieldData
@@ -139,27 +141,90 @@ class GridController(ControllerBase):
 
     closed_executors_buffer: int = 5
     start_time: int = 0
-
+    load_levels: bool = True # True to run on first tick, then will be reset
+    load_trailing: bool = True # True to run on first tick, then will be reset
+    load_cleanup_trailing: bool = False # False, no trailing cleanup on first tick
+    load_maring_update_check: bool = False # False, no maigin check on first tick
+    last_used_initial_margin: int = 0
+    
+    
     def __init__(self, config: GridConfig, *args, **kwargs):
         super().__init__(config, *args, **kwargs)
         self.config = config
         self.start_time = int(time.time())
-        self.logger().info("Start GRID controller")
+        self.logger().info(f"{self.config.trading_pair} - Start GRID controller")
+        # self.market_data_provider.connectors[0]
+        
+        self._complete_sell_order_forwarder = SourceInfoEventForwarder(self.process_order_completed_event)
+        self._event_pairs: List[Tuple[MarketEvent, SourceInfoEventForwarder]] = [
+            (MarketEvent.OrderCancelled, self._complete_sell_order_forwarder), # Recreate level
+            (MarketEvent.OrderFailure, self._complete_sell_order_forwarder), # Recreate level 
+            (MarketEvent.SellOrderCompleted, self._complete_sell_order_forwarder), # On sell need to check trail and levels
+            # (MarketEvent.OrderFilled, self._complete_sell_order_forwarder), # Needed?
+            # (MarketEvent.BuyOrderCompleted, self._complete_sell_order_forwarder), # No need to check
+        ]
+
+        for connector in self.market_data_provider.connectors.values():
+            for event_pair in self._event_pairs:
+                connector.add_listener(event_pair[0], event_pair[1])
+
+    def process_order_completed_event(self, event_tag: int, market, evt):
+        # check event_tag for type
+        event_trading_pair = None
+        current_event = MarketEvent(event_tag)
+        
+        # SellOrderCompleted | BuyOrderCompleted - base_asset + _ +  quote_asset = trading_pair
+        if current_event == MarketEvent.BuyOrderCompleted or current_event == MarketEvent.SellOrderCompleted:
+            event_trading_pair = evt.base_asset + "-" + evt.quote_asset
+        else:
+            if current_event != MarketEvent.OrderCancelled:
+                event_trading_pair = evt.trading_pair
+        
+
+        # IF IS THIS PAIR OR CANCELLED( WICH DOES NOT RETURN PAIR) CHECK EVENT
+        if event_trading_pair == self.config.trading_pair or current_event == MarketEvent.OrderCancelled:
+            self.logger().info(f"{self.config.trading_pair} - Logged event {event_tag} | {event_trading_pair} | {self.config.trading_pair}")
+            
+            if current_event == MarketEvent.OrderCancelled:
+                self.logger().info(f"{self.config.trading_pair} - A ORDER WAS CANCELED ")
+                self.load_levels = True
+            
+            if current_event == MarketEvent.OrderFailure:
+                self.load_levels = True
+                self.logger().info(f"{self.config.trading_pair} - A ORDER FAILED ")
+    
+            if current_event == MarketEvent.SellOrderCompleted:
+                self.logger().info(f"{self.config.trading_pair} - A position was sold, recreate levels")
+                self.load_levels = True
+                self.load_trailing = True
+        
         
     def determine_executor_actions(self) -> List[ExecutorAction]:
         actions = []
+        current_tick_count = int(time.time()) - self.start_time
+        
+        if (current_tick_count + self.config.checks_offset) % 60 == 0: # Mandatory check every minute
+            self.load_levels = True
+            self.load_trailing = True
+            self.load_maring_update_check = True
+
         if self.config.is_enabled:
-            actions.extend(self.create_actions_proposal())
-            actions.extend(self.stop_actions_proposal())
+            if self.load_levels or self.load_trailing or self.load_cleanup_trailing or self.load_maring_update_check:            
+                all_executors = self.get_all_executors()
+                active_executors = self.filter_executors(executors=all_executors, filter_func=lambda x: x.is_active)
+                self.logger().info(f"{self.config.trading_pair} - -----TICK {current_tick_count} Active: {len(active_executors)} | {len(all_executors)} -----")
+                actions.extend(self.create_actions_proposal(active_executors))
+                actions.extend(self.stop_actions_proposal(active_executors))
         else:
             actions.extend(self.panic_close_all())
+            
         return actions
 
     def panic_close_all(self) -> List[StopExecutorAction]:
         stop_actions = []
         all_executors = self.get_all_executors()
-        active_positions = self.filter_executors(executors=all_executors, filter_func=lambda x: x.is_active)
-        for executor in active_positions:
+        active_executors = self.filter_executors(executors=all_executors, filter_func=lambda x: x.is_active)
+        for executor in active_executors:
             stop_actions.append(StopExecutorAction(controller_id = self.config.id, executor_id = executor.id))
         return stop_actions
         
@@ -177,20 +242,19 @@ class GridController(ControllerBase):
         else:
             entry_price = self.market_data_provider.get_price_by_type(self.config.connector_name, self.config.trading_pair, PriceType.MidPrice)
             if update_file:
+                self.config.entry_price = entry_price
                 asyncio.create_task(self.update_yml(entry_price))
       
         return entry_price
 
     def check_if_positions_match_initial_margin(self, active_executors) -> List[CreateExecutorAction]:
         actions = []
-        # IF ANY ACTIVE POSITION, VALIDATE IF THE INITIAL MARGIN THAT THE POSITION WAS MADE BASED ON HAS NOT CHANGED
-        not_trading_positions = self.filter_executors(executors=active_executors, filter_func=lambda x: not x.is_trading)
-        if len(not_trading_positions) > 0:
-            # Check if initial margin has changed in first open position
-            initial_margin = round(not_trading_positions[0].config.amount * self.get_entry_price() * self.config.levels / self.config.leverage)
-            # INITIAL MARGIN CHANGED, STOP THE POSITIONs (System should create new ones)
-            if (self.config.initial_margin + self.config.reinvested) != initial_margin:
-                self.logger().info(f"Initial margin changed from {initial_margin} to {self.config.initial_margin + self.config.reinvested} ")
+        updated_intial_margin = self.calculate_initial_margin()
+        if updated_intial_margin != self.last_used_initial_margin:
+            self.logger().info(f"{self.config.trading_pair} - Initial margin changed from {self.last_used_initial_margin} to {updated_intial_margin} ")
+            # IF ANY ACTIVE POSITION, STOP IT
+            not_trading_positions = self.filter_executors(executors=active_executors, filter_func=lambda x: not x.is_trading)
+            if len(not_trading_positions) > 0:
                 for i in range(0, len(not_trading_positions), 1):
                     actions.append(StopExecutorAction(controller_id = self.config.id, executor_id = not_trading_positions[i].id))
 
@@ -201,45 +265,57 @@ class GridController(ControllerBase):
             return self.get_entry_price()
         return self.get_level_entry_price(level_id-1) * Decimal(1 - self.config.step)
 
-    def create_actions_proposal(self) -> List[CreateExecutorAction]:
+    def create_actions_proposal(self, active_executors) -> List[CreateExecutorAction]:
         create_actions = []
-        current_tick_count = int(time.time()) - self.start_time
+        if self.load_levels or self.load_trailing:
+            # # LEVEL |ENTRY PRICE|AMOUNT VALIDATION
+            # for executor in active_executors:
+            #     self.logger().info(f"{self.config.trading_pair} - Active: {executor.config.level_id} | {executor.config.amount} | {executor.config.entry_price} {self.get_level_entry_price(int(executor.config.level_id))}")
 
-        all_executors = self.get_all_executors()
-        active_positions = self.filter_executors(executors=all_executors, filter_func=lambda x: x.is_active)
-        
-        # self.logger().info(f"---------TICK------- Active: {len(active_positions)} {self.config.trading_pair} { current_tick_count } {self.start_time} " )
-        # # LEVEL |ENTRY PRICE|AMOUNT VALIDATION
-        # for executor in active_positions:
-        #     self.logger().info(f"Active: {executor.config.level_id} | {executor.config.amount} | {executor.config.entry_price} {self.get_level_entry_price(int(executor.config.level_id))}")
+            if self.load_levels:
+                self.load_levels = False
+                create_actions.extend(self.make_missing_levels_actions(active_executors))
+                self.logger().info(f"{self.config.trading_pair} - Creating missing levels")
 
-        if (self.config.checks_offset + current_tick_count) % self.config.checks_interval == 0:
-            create_actions.extend(self.make_missing_levels_actions(active_positions))
-
-        create_actions.extend(self.make_trailing_actions(active_positions))
+            if self.load_trailing:
+                self.load_trailing = False
+                create_actions.extend(self.make_trailing_actions(active_executors))
+                self.logger().info(f"{self.config.trading_pair} - Check if should be trailing")
+    
         return create_actions
     
-    def make_missing_levels_actions(self, active_positions) -> List[CreateExecutorAction]:        
+    
+    def calculate_initial_margin(self) -> Decimal:
+        initial_margin = self.config.initial_margin + self.config.reinvested
+        return initial_margin
+
+    def make_missing_levels_actions(self, active_executors) -> List[CreateExecutorAction]:        
         actions = []
         # Check if there is at least one executor per each level
         entry_price = self.get_entry_price(update_file=True)
-        if len(active_positions) < self.config.levels:
-            order_amount = (self.config.initial_margin + self.config.reinvested) * self.config.leverage / self.config.levels / entry_price
+        
+        if self.last_used_initial_margin == 0:
+            self.last_used_initial_margin = self.calculate_initial_margin()
+        
+        if len(active_executors) < self.config.levels:
+            order_amount = self.last_used_initial_margin * self.config.leverage / self.config.levels / entry_price
             for i in range(0, self.config.levels, 1):
-                level_positions = self.filter_executors(executors = active_positions, filter_func = lambda x: x.config.level_id == str(i))
+                level_positions = self.filter_executors(executors = active_executors, filter_func = lambda x: x.config.level_id == str(i))
                 if len(level_positions) == 0:
                     actions.append(CreateExecutorAction(controller_id = self.config.id, executor_config = self.get_executor_config(self.get_level_entry_price(i), order_amount, i)))
         
         return actions
     
     
-    def make_trailing_actions(self, active_positions) -> List[CreateExecutorAction]:
+    def make_trailing_actions(self, active_executors) -> List[CreateExecutorAction]:
         actions = []
         # Trailing if the condition is met
-        top_executor = max(active_positions, default = None, key = lambda x: x.config.entry_price)
+        top_executor = max(active_executors, default = None, key = lambda x: x.config.entry_price)
         if not top_executor is None and not top_executor.is_trading and time.time() - top_executor.timestamp > self.config.executor_refresh_time: 
+            self.load_cleanup_trailing = True
+            self.logger().info(f"{self.config.trading_pair} - Trailing.... ")
             actions.append(CreateExecutorAction(controller_id = self.config.id, executor_config = self.get_executor_config(top_executor.config.entry_price * Decimal(1 + self.config.step), top_executor.config.amount, 0)))
-            for executor in active_positions:
+            for executor in active_executors:
                 executor.config.level_id = str(int(executor.config.level_id) + 1)
             
             asyncio.create_task(self.update_yml(top_executor.config.entry_price * Decimal(1 + self.config.step)))
@@ -247,22 +323,26 @@ class GridController(ControllerBase):
         return actions
     
     
-    def make_trailing_stop_actions(self, active_positions) -> List[StopExecutorAction]:
+    def make_trailing_stop_actions(self, active_executors) -> List[StopExecutorAction]:
         actions = []
-        if len(active_positions) > self.config.levels:
-            # self.logger().info("Trailing: Removing last")
-            bot_executor = min(active_positions, key = lambda x: x.config.entry_price)
+        if len(active_executors) > self.config.levels:
+            bot_executor = min(active_executors, key = lambda x: x.config.entry_price)
             actions.append(StopExecutorAction(controller_id = self.config.id, executor_id = bot_executor.id))
         return actions
     
    
-    def stop_actions_proposal(self) -> List[StopExecutorAction]:
+    def stop_actions_proposal(self, active_executors) -> List[StopExecutorAction]:
         stop_actions = []
-        all_executors = self.get_all_executors()
-        active_executors = self.filter_executors(executors=all_executors, filter_func=lambda x: x.is_active)
 
-        stop_actions.extend(self.make_trailing_stop_actions(active_executors))
-        stop_actions.extend(self.check_if_positions_match_initial_margin(active_executors = active_executors))
+        if self.load_cleanup_trailing:
+            self.load_cleanup_trailing = False
+            stop_actions.extend(self.make_trailing_stop_actions(active_executors))
+            self.logger().info(f"{self.config.trading_pair} - Trailing: Removing last")
+            
+        if self.load_maring_update_check: 
+            self.load_maring_update_check = False
+            stop_actions.extend(self.check_if_positions_match_initial_margin(active_executors))
+            self.logger().info(f"{self.config.trading_pair} - Checking if positions match initial margin")
 
         return stop_actions
 
