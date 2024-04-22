@@ -194,7 +194,6 @@ class GridController(ControllerBase):
     
             if current_event == MarketEvent.SellOrderCompleted:
                 self.logger().info(f"{self.config.trading_pair} - A position was sold, recreate levels")
-                self.load_levels = True
                 self.load_trailing = True
         
         
@@ -318,9 +317,9 @@ class GridController(ControllerBase):
             # Update entry price
             new_entry_price = top_executor.config.entry_price * Decimal(1 + self.config.step)
             self.config.entry_price = new_entry_price
-            self.load_levels = True
             asyncio.create_task(self.update_yml(new_entry_price))
 
+        self.load_levels = True
         return actions
     
    
