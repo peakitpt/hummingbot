@@ -78,8 +78,8 @@ class GridPinto(StrategyV2Base):
                 income = await self.get_income_history(first_connector_key)
                 # ONLY IF PROFITS ARE ABOVE 0
                 
-                if income is not None and income.get('pnl') is not None and income.get('pnl') > 0:
-                    self.logger().info(f"MONEY TO SPARE: {income.get('pnl')}")
+                if income is not None and income['pnl'] is not None and income['pnl'] > 0:
+                    self.logger().info(f"MONEY TO SPARE: {income['pnl']}")
         
         pass
     
@@ -90,7 +90,7 @@ class GridPinto(StrategyV2Base):
         current_time = datetime.now()
 
         # Get yesterday's date
-        yesterday = current_time - timedelta(days=1)
+        yesterday = current_time - timedelta(days=0)
 
         # Set the time to 00:00:00
         start_of_yesterday = yesterday.replace(hour=0, minute=0, second=0, microsecond=0)
@@ -120,10 +120,10 @@ class GridPinto(StrategyV2Base):
             
         self.logger().info(f"Pnl: {pnl} | realized_pnl: {realized_pnl} | commission: {commission} | other: {other}")
         return {
-            pnl,
-            realized_pnl,
-            commission,
-            other
+            "pnl": pnl,
+            "realized_pnl": realized_pnl,
+            "commission": commission,
+            "other": other
         }
     
     async def get_account(self, connector_key) -> None:
