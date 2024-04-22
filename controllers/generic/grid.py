@@ -257,6 +257,8 @@ class GridController(ControllerBase):
             if len(not_trading_positions) > 0:
                 for i in range(0, len(not_trading_positions), 1):
                     actions.append(StopExecutorAction(controller_id = self.config.id, executor_id = not_trading_positions[i].id))
+            
+            self.load_levels = True
 
         return actions
 
