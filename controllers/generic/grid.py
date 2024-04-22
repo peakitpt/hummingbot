@@ -310,7 +310,7 @@ class GridController(ControllerBase):
         actions = []
         # Trailing if the condition is met
         top_executor = max(active_executors, default = None, key = lambda x: x.config.entry_price)
-        if not top_executor is None and not top_executor.is_trading and time.time() - top_executor.timestamp > self.config.executor_refresh_time: 
+        if not top_executor is None and not top_executor.is_trading and (time.time() - top_executor.timestamp + 4) > self.config.executor_refresh_time: 
             self.logger().info(f"{self.config.trading_pair} - Trailing.... ")
             for executor in active_executors:
                 actions.append(StopExecutorAction(controller_id = self.config.id, executor_id = executor.id))
