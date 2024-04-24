@@ -140,13 +140,14 @@ class GridController(ControllerBase):
     closed_executors_buffer: int = 5
     start_time: int = 0
     load_levels: bool = True # True to run on first tick, then will be reset
-    load_trailing: bool = True # True to run on first tick, then will be reset
-    # load_maring_update_check: bool = False # False, no maigin check on first tick
-    forced_checks_interval: int = 600 # TIME IN SECCONDS
+    load_trailing: bool = False 
+    update_interval: int = 10 # Time between updates
+    trailing_checks_interval: int = 20 # Time between trailing checks
+    trailing_min_wait_time: int = 60 # Time that top position must wait before trailing
+    forced_checks_interval: int = 600 # Time between missing levels checks
     
     def __init__(self, config: GridConfig, *args, **kwargs):
         super().__init__(config, *args, **kwargs)
-        self.update_interval = 10
         self.config = config
         self.start_time = int(time.time())
         self.logger().info(f"{self.config.trading_pair} - Start GRID controller")
@@ -156,13 +157,13 @@ class GridController(ControllerBase):
         actions = []
         current_tick_count = int(time.time()) - self.start_time
 
- 
-        # if (current_tick_count + self.config.checks_offset) % self.forced_checks_interval == 0: # Mandatory check every minute
-        if current_tick_count % self.forced_checks_interval == 0: # Mandatory check every minute
-            self.load_levels = True
-            self.load_trailing = True
-
         if self.config.is_enabled:
+            if current_tick_count % self.trailing_checks_interval == 0: 
+                self.load_trailing = True
+                
+            if current_tick_count % self.forced_checks_interval == 0: 
+                self.load_levels = True
+
             if self.load_levels or self.load_trailing:
                 all_executors = self.get_all_executors()
                 active_executors = self.filter_executors(executors=all_executors, filter_func=lambda x: x.is_active)
@@ -273,7 +274,7 @@ class GridController(ControllerBase):
         actions = []
         # Trailing if the condition is met
         top_executor = max(active_executors, default = None, key = lambda x: x.config.entry_price)
-        if not top_executor is None and not top_executor.is_trading and (time.time() - top_executor.timestamp + 4) > self.forced_checks_interval: 
+        if not top_executor is None and not top_executor.is_trading and (time.time() - top_executor.timestamp + 4) > self.trailing_min_wait_time: 
             self.logger().info(f"{self.config.trading_pair} - Trailing.... ")
             # UPDATE LEVEL ID
             for executor in active_executors:

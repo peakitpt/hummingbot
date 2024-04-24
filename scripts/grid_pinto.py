@@ -68,55 +68,24 @@ class GridPinto(StrategyV2Base):
                         self.logger().info(f"{controller.config.trading_pair} - EVT Active: {len(active_executors)} | {len(all_executors)}")    
 
                         pair_executors = self.executor_orchestrator.executors[controller_id]
-                        # self.logger().info(f"{controller.config.trading_pair} - {controller_id} - {pair_executors}")
                         if current_event == MarketEvent.SellOrderCompleted:
                             for executor in pair_executors:
-                                # if executor._open_order is not None and executor._open_order.order_id == evt.order_id:
-                                #     self.logger().info(f"This is me open {executor.config.level_id} | {vars(executor)}")
                                 if executor._take_profit_limit_order is not None and executor._take_profit_limit_order.order_id == evt.order_id:
-                                # if executor._close_order is not None and executor._close_order.order_id == evt.order_id:
-                                    self.logger().info(f"This is me close {executor.config.level_id} | {vars(executor)}")
-                                    # self.logger().info(f"{self.config.trading_pair} - A position was sold, recreate levels")
                                     event_actions = []
                                     
                                     all_executors = controller.get_all_executors()
                                     active_executors = controller.filter_executors(executors=all_executors, filter_func=lambda x: x.is_active)
-                                    # self.logger().info(f"{self.config.trading_pair} - EVT Active: {len(active_executors)} | {len(all_executors)}")    
                                     
                                     level_id = int(executor.config.level_id.split('_')[1])
                                     event_actions = []
                                     event_actions.extend(controller.recreate_level(active_executors, level_id))
-                                    # if level_id == 0:
-                                    #     event_actions.extend(controller.make_trailing_actions(active_executors, level_id))
                                     
                                     # Send actions
                                     asyncio.create_task(controller.send_actions(event_actions))
 
-                            #     self.logger().info(f"This is me take_profit_limit {executor.config.level_id} | {vars(executor)}")
-                        # for controller_id, executor in self.executor_orchestrator.executors.items():
-                        #     self.logger().info(f"{controller.config.trading_pair} - {controller_id} - {executor}")
-
                     
             except Exception as e:
-                self.logger().error(f"Error processing event")
-            
-        # IF IS THIS PAIR OR CHECK EVENT
-        # if event_trading_pair == self.config.trading_pair:
-    
-        #     if current_event == MarketEvent.SellOrderCompleted:
-        #         self.logger().info(f"{self.config.trading_pair} - A position was sold, recreate levels")
-        #         self.load_trailing = True
-        #         event_actions = []
-                
-        #         all_executors = self.get_all_executors()
-        #         active_executors = self.filter_executors(executors=all_executors, filter_func=lambda x: x.is_active)
-        #         self.logger().info(f"{self.config.trading_pair} - EVT Active: {len(active_executors)} | {len(all_executors)}")    
-                
-        #         event_actions.extend(self.make_trailing_actions(active_executors))
-        #         # event_actions.extend(self.recreate_level(active_executors))
-        #         # Send actions
-        #         asyncio.create_task(self.send_actions(event_actions))
-                
+                self.logger().error(f"Error processing event {evt} | {e}")
         
     def start(self, clock: Clock, timestamp: float) -> None:
         """
