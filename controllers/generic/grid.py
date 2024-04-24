@@ -142,11 +142,11 @@ class GridController(ControllerBase):
     load_levels: bool = True # True to run on first tick, then will be reset
     load_trailing: bool = True # True to run on first tick, then will be reset
     # load_maring_update_check: bool = False # False, no maigin check on first tick
-    forced_checks_interval: int = 60 # TIME IN SECCONDS
+    forced_checks_interval: int = 600 # TIME IN SECCONDS
     
     def __init__(self, config: GridConfig, *args, **kwargs):
         super().__init__(config, *args, **kwargs)
-        self.update_interval = 20
+        self.update_interval = 10
         self.config = config
         self.start_time = int(time.time())
         self.logger().info(f"{self.config.trading_pair} - Start GRID controller")
