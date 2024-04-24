@@ -47,7 +47,7 @@ class GridPinto(StrategyV2Base):
         
         if current_tick_count % 10 == 0: # Check every minute
             self.logger().info("--------TICK " + str(current_tick_count) + "----------------")
-            asyncio.create_task(self.analyze_profits())
+            # asyncio.create_task(self.analyze_profits())
 
         return []
 
@@ -69,7 +69,7 @@ class GridPinto(StrategyV2Base):
         # Get previous day profits
         
         self.logger().info(vars(self))
-        if len(self.controllers) > 0:
+        if len(self.connectors) > 0:
             first_connector_key = next(iter(self.connectors), None)
             self.logger().info('first_connector_key')
             self.logger().info(first_connector_key)
@@ -80,17 +80,55 @@ class GridPinto(StrategyV2Base):
                 
                 if income is not None and income['pnl'] is not None and income['pnl'] > 0:
                     self.logger().info(f"MONEY TO SPARE: {income['pnl']}")
+                    
+                    # SPLIT THE MONEY TO SPARE
+                    # REINVESTMENT
+                    reinvestment_ammount = income['pnl'] * self.config.reinvestment_profit_percentage / 100
+                    self.logger().info(f"REINVESTMENT: {reinvestment_ammount}")
+                    if reinvestment_ammount > 0:
+                        asyncio.create_task(self.reinvest(reinvestment_ammount))
+                    # SPOT
+                    spot_ammount = income['pnl'] * self.config.spot_profit_percentage / 100
+                    self.logger().info(f"SPOT: {spot_ammount}")
+                    # if spot_ammount > 0:
+                    #     asyncio.create_task(self.transfer_to_spot(first_connector_key, spot_ammount))
+                    
+                    # FUNDING
+                    funding_ammount = income['pnl'] * self.config.funding_profit_percentage / 100
+                    self.logger().info(f"FUNDING: {funding_ammount}")
+                    if funding_ammount > 0:
+                        asyncio.create_task(self.transfer_to_funding(first_connector_key, funding_ammount))
         
         pass
     
     
+    
+    def reinvest(self, reinvestment_ammount):
+        # Get all the conontrollers
+        # Split between all the active controllers
+        # Update files
+        pass
+    
+    async def transfer_to_spot(self, connector_key, spot_ammount):
+        # NEEDS Enable Futures permission
+        transfer = await self.connectors[connector_key]._api_get(
+            params={
+                "asset": 'USDT',
+                "amount": spot_ammount,
+                "type": 2,
+            },
+            path_url='v1/futures/transfer',
+            is_auth_required=True)
+        # Update files
+        pass
     async def get_income_history(self, connector_key) -> None:
         self.logger().info("Income")
         # Get current date and time
         current_time = datetime.now()
 
         # Get yesterday's date
-        yesterday = current_time - timedelta(days=0)
+        # yesterday = current_time - timedelta(days=0)
+        yesterday = current_time # Check for today
 
         # Set the time to 00:00:00
         start_of_yesterday = yesterday.replace(hour=0, minute=0, second=0, microsecond=0)
@@ -99,31 +137,56 @@ class GridPinto(StrategyV2Base):
 
         income = await self.connectors[connector_key]._api_get(
             params={
-                "startTime": start_of_yesterday.timestamp(),
-                "endTime": end_of_yesterday.timestamp(),
+                "startTime": int(start_of_yesterday.timestamp() * 1000),
+                "endTime": int(end_of_yesterday.timestamp() * 1000),
+                "limit" : 1000,
             },
             path_url='v1/income',
             is_auth_required=True)
         
+        self.logger().info({
+            "startTime": int(start_of_yesterday.timestamp() * 1000),
+            "endTime": int(end_of_yesterday.timestamp() * 1000),
+        })
         pnl = Decimal(0.0)
         realized_pnl = Decimal(0.0)
         commission = Decimal(0.0)
         other = Decimal(0.0)
+        bnbpnl = Decimal(0.0)
+        bnbrealized_pnl = Decimal(0.0)
+        bnbcommission = Decimal(0.0)
+        bnbother = Decimal(0.0)
+        
         for line in income:
-            pnl += Decimal(line.get('income'))
-            if line.get('incomeType') == 'REALIZED_PNL':
-                realized_pnl += Decimal(line.get('income'))
-            elif line.get('incomeType') == 'COMMISSION':
-                commission += Decimal(line.get('income'))
-            else:
-                other += Decimal(line.get('income'))
-            
+            self.logger().info(line)
+            if line.get('asset') == 'BNB':
+                bnbpnl += Decimal(line.get('income'))
+                if line.get('incomeType') == 'REALIZED_PNL':
+                    bnbrealized_pnl += Decimal(line.get('income'))
+                elif line.get('incomeType') == 'COMMISSION':
+                    bnbcommission += Decimal(line.get('income'))
+                else:
+                    bnbother += Decimal(line.get('income'))
+            elif line.get('asset') == 'USDT':
+                pnl += Decimal(line.get('income'))
+                if line.get('incomeType') == 'REALIZED_PNL':
+                    realized_pnl += Decimal(line.get('income'))
+                elif line.get('incomeType') == 'COMMISSION':
+                    commission += Decimal(line.get('income'))
+                else:
+                    other += Decimal(line.get('income'))
+
+        self.logger().info(f"BNBpnl: {bnbpnl} | bnbrealized_pnl: {bnbrealized_pnl} | bnbcommission: {bnbcommission} | bnbother: {bnbother}")
         self.logger().info(f"Pnl: {pnl} | realized_pnl: {realized_pnl} | commission: {commission} | other: {other}")
         return {
             "pnl": pnl,
             "realized_pnl": realized_pnl,
             "commission": commission,
-            "other": other
+            "other": other,
+            "bnbpnl": bnbpnl,
+            "bnbrealized_pnl": bnbrealized_pnl,
+            "bnbcommission": bnbcommission,
+            "bnbother": bnbother
         }
     
     async def get_account(self, connector_key) -> None:
