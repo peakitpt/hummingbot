@@ -5,6 +5,8 @@ import os
 import time
 from typing import Dict, List, Set
 
+from hummingbot.core.event.event_forwarder import SourceInfoEventForwarder
+from hummingbot.core.event.events import MarketEvent
 from pydantic import Field
 
 from hummingbot.connector.connector_base import ConnectorBase
@@ -32,7 +34,90 @@ class GridPinto(StrategyV2Base):
         super().__init__(connectors, config)
         self.config = config
         self.start_time = int(time.time())
+        
+        
+        self._complete_sell_order_forwarder = SourceInfoEventForwarder(self.process_order_completed_event)
 
+        for connector in self.market_data_provider.connectors.values():
+            connector.add_listener(MarketEvent.SellOrderCompleted, self._complete_sell_order_forwarder)
+            # connector.add_listener(MarketEvent.SellOrderCompleted, self._complete_sell_order_forwarder)
+            
+
+    def process_order_completed_event(self, event_tag: int, market, evt):
+        # check event_tag for type
+        event_trading_pair = None
+        current_event = MarketEvent(event_tag)
+        
+        # # SellOrderCompleted | BuyOrderCompleted - base_asset + _ +  quote_asset = trading_pair
+        if current_event == MarketEvent.BuyOrderCompleted or current_event == MarketEvent.SellOrderCompleted:
+            event_trading_pair = evt.base_asset + "-" + evt.quote_asset
+        else:
+            if current_event != MarketEvent.OrderCancelled:
+                event_trading_pair = evt.trading_pair
+        
+
+
+        if event_trading_pair:
+            self.logger().info(f" Logged event {event_tag} | {event_trading_pair} | {evt.order_id} ")
+            try:
+                for controller_id, controller_generic in self.controllers.items():
+                    if controller_generic.config.trading_pair == event_trading_pair:
+                        controller = self.controllers[controller_id] 
+                        all_executors = controller.get_all_executors()
+                        active_executors = controller.filter_executors(executors=all_executors, filter_func=lambda x: x.is_active)
+                        self.logger().info(f"{controller.config.trading_pair} - EVT Active: {len(active_executors)} | {len(all_executors)}")    
+
+                        pair_executors = self.executor_orchestrator.executors[controller_id]
+                        # self.logger().info(f"{controller.config.trading_pair} - {controller_id} - {pair_executors}")
+                        if current_event == MarketEvent.SellOrderCompleted:
+                            for executor in pair_executors:
+                                # if executor._open_order is not None and executor._open_order.order_id == evt.order_id:
+                                #     self.logger().info(f"This is me open {executor.config.level_id} | {vars(executor)}")
+                                if executor._take_profit_limit_order is not None and executor._take_profit_limit_order.order_id == evt.order_id:
+                                # if executor._close_order is not None and executor._close_order.order_id == evt.order_id:
+                                    self.logger().info(f"This is me close {executor.config.level_id} | {vars(executor)}")
+                                    # self.logger().info(f"{self.config.trading_pair} - A position was sold, recreate levels")
+                                    event_actions = []
+                                    
+                                    all_executors = controller.get_all_executors()
+                                    active_executors = controller.filter_executors(executors=all_executors, filter_func=lambda x: x.is_active)
+                                    # self.logger().info(f"{self.config.trading_pair} - EVT Active: {len(active_executors)} | {len(all_executors)}")    
+                                    
+                                    level_id = int(executor.config.level_id.split('_')[1])
+                                    event_actions = []
+                                    event_actions.extend(controller.recreate_level(active_executors, level_id))
+                                    # if level_id == 0:
+                                    #     event_actions.extend(controller.make_trailing_actions(active_executors, level_id))
+                                    
+                                    # Send actions
+                                    asyncio.create_task(controller.send_actions(event_actions))
+
+                            #     self.logger().info(f"This is me take_profit_limit {executor.config.level_id} | {vars(executor)}")
+                        # for controller_id, executor in self.executor_orchestrator.executors.items():
+                        #     self.logger().info(f"{controller.config.trading_pair} - {controller_id} - {executor}")
+
+                    
+            except Exception as e:
+                self.logger().error(f"Error processing event")
+            
+        # IF IS THIS PAIR OR CHECK EVENT
+        # if event_trading_pair == self.config.trading_pair:
+    
+        #     if current_event == MarketEvent.SellOrderCompleted:
+        #         self.logger().info(f"{self.config.trading_pair} - A position was sold, recreate levels")
+        #         self.load_trailing = True
+        #         event_actions = []
+                
+        #         all_executors = self.get_all_executors()
+        #         active_executors = self.filter_executors(executors=all_executors, filter_func=lambda x: x.is_active)
+        #         self.logger().info(f"{self.config.trading_pair} - EVT Active: {len(active_executors)} | {len(all_executors)}")    
+                
+        #         event_actions.extend(self.make_trailing_actions(active_executors))
+        #         # event_actions.extend(self.recreate_level(active_executors))
+        #         # Send actions
+        #         asyncio.create_task(self.send_actions(event_actions))
+                
+        
     def start(self, clock: Clock, timestamp: float) -> None:
         """
         Start the strategy.
@@ -46,15 +131,33 @@ class GridPinto(StrategyV2Base):
         current_tick_count = int(time.time()) - self.start_time
         
         if current_tick_count % 10 == 0: # Check every minute
-            self.logger().info("--------TICK " + str(current_tick_count) + "----------------")
+            self.logger().info("--------MAIN TICK " + str(current_tick_count) + "----------------")
             # asyncio.create_task(self.analyze_profits())
 
         return []
+
+    def apply_initial_setting(self):
+        for controller_id, controller in self.controllers.items():
+            config_dict = controller.config.dict()
+            if self.is_perpetual(config_dict.get("connector_name")):
+                asyncio.create_task(self.get_account(config_dict["connector_name"]))
+                if "position_mode" in config_dict:
+                    self.connectors[config_dict["connector_name"]].set_position_mode(config_dict["position_mode"])
+                if "leverage" in config_dict:
+                    self.connectors[config_dict["connector_name"]].set_leverage(leverage=config_dict["leverage"],
+                                                                                trading_pair=config_dict["trading_pair"])
+
+
 
     def stop_actions_proposal(self) -> List[StopExecutorAction]:
         return []
 
 
+
+
+# TESTING.....
+# TESTING.....
+# TESTING.....
     async def analyze_profits(self) -> None:
         
         self.logger().info(self.config)
@@ -196,13 +299,3 @@ class GridPinto(StrategyV2Base):
         self.logger().info(f"Account_data: {maintenance_margin}% | {Decimal(account.get('availableBalance'))} | {Decimal(account.get('maxWithdrawAmount'))} | {Decimal(account.get('totalCrossUnPnl'))}")
         return account
         
-    def apply_initial_setting(self):
-        for controller_id, controller in self.controllers.items():
-            config_dict = controller.config.dict()
-            if self.is_perpetual(config_dict.get("connector_name")):
-                asyncio.create_task(self.get_account(config_dict["connector_name"]))
-                if "position_mode" in config_dict:
-                    self.connectors[config_dict["connector_name"]].set_position_mode(config_dict["position_mode"])
-                if "leverage" in config_dict:
-                    self.connectors[config_dict["connector_name"]].set_leverage(leverage=config_dict["leverage"],
-                                                                                trading_pair=config_dict["trading_pair"])
