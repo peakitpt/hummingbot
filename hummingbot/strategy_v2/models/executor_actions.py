@@ -1,5 +1,6 @@
 from typing import Optional, Union
 
+from hummingbot.strategy_v2.executors.combo_executor.data_types import ComboExecutorConfig
 from pydantic import BaseModel
 
 from hummingbot.strategy_v2.executors.arbitrage_executor.data_types import ArbitrageExecutorConfig
@@ -21,7 +22,7 @@ class CreateExecutorAction(ExecutorAction):
     """
     Action to create an executor.
     """
-    executor_config: Union[PositionExecutorConfig, DCAExecutorConfig, XEMMExecutorConfig, ArbitrageExecutorConfig, TWAPExecutorConfig, GridExecutorConfig]
+    executor_config: Union[PositionExecutorConfig, DCAExecutorConfig, XEMMExecutorConfig, ArbitrageExecutorConfig, TWAPExecutorConfig, GridExecutorConfig, ComboExecutorConfig]
 
 
 class StopExecutorAction(ExecutorAction):

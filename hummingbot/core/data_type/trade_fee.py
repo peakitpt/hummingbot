@@ -118,6 +118,11 @@ class TradeFeeBase(ABC):
                           percent: Decimal = S_DECIMAL_0,
                           percent_token: Optional[str] = None,
                           flat_fees: Optional[List[TokenAmount]] = None) -> "TradeFeeBase":
+        if percent_token == "BNFCR":
+            percent_token = "USDT"
+            flat_fees = list(map(lambda flat_fee: TokenAmount("USDT", flat_fee.amount) if flat_fee.token == "BNFCR" else TokenAmount.from_json(flat_fee), flat_fees))
+        
+
         fee_cls: Type[TradeFeeBase] = (
             AddedToCostTradeFee
             if position_action == PositionAction.OPEN or fee_schema.percent_fee_token is not None

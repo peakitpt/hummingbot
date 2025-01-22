@@ -9,6 +9,8 @@ from hummingbot.logger import HummingbotLogger
 from hummingbot.strategy.script_strategy_base import ScriptStrategyBase
 from hummingbot.strategy_v2.executors.arbitrage_executor.arbitrage_executor import ArbitrageExecutor
 from hummingbot.strategy_v2.executors.arbitrage_executor.data_types import ArbitrageExecutorConfig
+from hummingbot.strategy_v2.executors.combo_executor.combo_executor import ComboExecutor
+from hummingbot.strategy_v2.executors.combo_executor.data_types import ComboExecutorConfig
 from hummingbot.strategy_v2.executors.dca_executor.data_types import DCAExecutorConfig
 from hummingbot.strategy_v2.executors.dca_executor.dca_executor import DCAExecutor
 from hummingbot.strategy_v2.executors.grid_executor.data_types import GridExecutorConfig
@@ -121,7 +123,9 @@ class ExecutorOrchestrator:
         # compa
         executor_config.controller_id = controller_id
 
-        if isinstance(executor_config, PositionExecutorConfig):
+        if isinstance(executor_config, ComboExecutorConfig):
+            executor = ComboExecutor(self.strategy, executor_config, self.executors_update_interval)
+        elif isinstance(executor_config, PositionExecutorConfig):
             executor = PositionExecutor(self.strategy, executor_config, self.executors_update_interval)
         elif isinstance(executor_config, GridExecutorConfig):
             executor = GridExecutor(self.strategy, executor_config, self.executors_update_interval)
