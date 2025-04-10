@@ -30,6 +30,7 @@ class StopExecutorAction(ExecutorAction):
     Action to stop an executor.
     """
     executor_id: str
+    keep_position: Optional[bool] = False
 
 
 class StoreExecutorAction(ExecutorAction):
