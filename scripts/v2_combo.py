@@ -8,7 +8,7 @@ from pydantic import Field
 from hummingbot.client.hummingbot_application import HummingbotApplication
 from hummingbot.connector.connector_base import ConnectorBase
 from hummingbot.core.clock import Clock
-from hummingbot.core.data_type.common import OrderType, TradeType
+from hummingbot.core.data_type.common import OrderType, PriceType, TradeType
 from hummingbot.data_feed.candles_feed.data_types import CandlesConfig
 from hummingbot.remote_iface.mqtt import ETopicPublisher
 from hummingbot.strategy.strategy_v2_base import StrategyV2Base, StrategyV2ConfigBase

@@ -16,8 +16,8 @@ class ComboExecutorConfig(GridExecutorConfig):
     # Boundaries
     connector_name: str
     trading_pair: str
-    start_price: Decimal
-    end_price: Decimal
+    start_price: Optional[Decimal] = None
+    end_price: Optional[Decimal] = None
     limit_price: Optional[Decimal] = None
     side: TradeType = TradeType.BUY
     # Profiling
@@ -32,6 +32,8 @@ class ComboExecutorConfig(GridExecutorConfig):
     safe_extra_spread: Decimal = Decimal("0.0002")
     # Risk Management
     triple_barrier_config: TripleBarrierConfig
-    leverage: int = 20
+    leverage: int = 5
     level_id: Optional[str] = None
     deduct_base_fees: bool = False
+    keep_position: bool = False
+    coerce_tp_to_step: bool = False

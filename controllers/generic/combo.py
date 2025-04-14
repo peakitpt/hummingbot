@@ -50,6 +50,8 @@ class ComboConfig(ControllerConfigBase):
     # Risk Management
     take_profit: Decimal = Field(default=Decimal("0.02"), gt=0, client_data=ClientFieldData(
         prompt_on_new=True, prompt=lambda mi: "Position take profit (e.g. 0.02 for 2%)"))
+    adr: Optional[Decimal] = Field(default = Decimal("0.00051"), client_data=ClientFieldData(is_updatable=True))
+
 
     @property
     def triple_barrier_config(self) -> TripleBarrierConfig:
@@ -94,17 +96,9 @@ class Combo(ControllerBase):
                                                                 self.config.trading_pair,
                                                                 PriceType.MidPrice)
             
-            # self.config.limit_price = market_price * Decimal("0.4")
-            # self.config.start_price = market_price * Decimal("0.4")
-            # self.config.limit_price = market_price * Decimal("0.9")
-            max_drawdown = 60
-            tp = 2
-            drawdown = (100 - max_drawdown) / 100
-            take_profit = 1 + (tp/100)
-            start_price = market_price * Decimal(drawdown)
-            end_price = market_price #* Decimal(take_profit)
-            self.logger().info(f"start_price: {start_price}")
-            self.logger().info(f"end_price: {end_price}")
+            start_price = market_price - market_price * self.config.adr if self.config.start_price is None else self.config.start_price
+            end_price = market_price + market_price * self.config.adr if self.config.end_price is None else self.config.end_price
+
             return [CreateExecutorAction(
                 controller_id=self.config.id,
                 executor_config=ComboExecutorConfig(
@@ -114,14 +108,14 @@ class Combo(ControllerBase):
                     start_price=start_price,
                     end_price=end_price,
                     leverage=self.config.leverage,
-                    # limit_price=self.config.limit_price,
+                    limit_price=self.config.limit_price,
                     side=self.config.side,
                     total_amount_quote=self.config.total_amount_quote,
                     min_spread_between_orders=self.config.min_spread_between_orders,
                     min_order_amount_quote=self.config.min_order_amount_quote,
                     max_open_orders=self.config.max_open_orders,
                     max_orders_per_batch=self.config.max_orders_per_batch,
-                    # order_frequency=self.config.order_frequency,
+                    order_frequency=self.config.order_frequency,
                     activation_bounds=self.config.activation_bounds,
                     triple_barrier_config=self.config.triple_barrier_config,
                     level_id=None))]
@@ -172,8 +166,7 @@ class Combo(ControllerBase):
                 f"P. PnL: {level.custom_info['position_pnl_quote']:.4f}",
                 f"Open Liquidity: {level.custom_info['open_liquidity_placed']:.4f}",
                 f"Close Liquidity: {level.custom_info['close_liquidity_placed']:.4f}",
-                f"Position: {level.custom_info['position_size_quote']:.4f}",
-                f"PNL (%): {level.custom_info['net_pnl_pct']:.2f}%"
+                f"Position: {level.custom_info['position_size_quote']:.4f}"
             ]
             # Combine columns row by row
             # max_rows = max(len(grid_config), len(level_dist), len(order_stats), len(perf_metrics))
