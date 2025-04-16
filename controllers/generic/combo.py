@@ -110,7 +110,7 @@ class Combo(ControllerBase):
                     leverage=self.config.leverage,
                     limit_price=self.config.limit_price,
                     side=self.config.side,
-                    total_amount_quote=self.config.total_amount_quote,
+                    total_amount_quote=self.config.total_amount_quote * self.config.leverage,
                     min_spread_between_orders=self.config.min_spread_between_orders,
                     min_order_amount_quote=self.config.min_order_amount_quote,
                     max_open_orders=self.config.max_open_orders,

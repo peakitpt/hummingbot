@@ -2,8 +2,10 @@ import asyncio
 import logging
 from decimal import ROUND_DOWN, Decimal
 from typing import Dict, List, Optional, Union
+from hummingbot.connector.constants import s_decimal_NaN
 
 from hummingbot.connector.connector_base import ConnectorBase
+from hummingbot.connector.utils import get_new_client_order_id
 from hummingbot.core.data_type.common import OrderType, PositionAction, PriceType, TradeType
 from hummingbot.core.data_type.order_candidate import OrderCandidate, PerpetualOrderCandidate
 from hummingbot.core.event.events import (
@@ -15,6 +17,7 @@ from hummingbot.core.event.events import (
     SellOrderCompletedEvent,
     SellOrderCreatedEvent,
 )
+from hummingbot.core.utils.async_utils import safe_ensure_future
 from hummingbot.logger import HummingbotLogger
 from hummingbot.strategy.script_strategy_base import ScriptStrategyBase
 from hummingbot.strategy_v2.executors.combo_executor.data_types import ComboExecutorConfig
@@ -39,22 +42,42 @@ class ComboExecutor(GridExecutor):
         :param update_interval: The interval at which the PositionExecutor should be updated, defaults to 1.0.
         :param max_retries: The maximum number of retries for the PositionExecutor, defaults to 5.
         """
+        self._stop_loss_order = None
         self.config: ComboExecutorConfig = config
         super().__init__(strategy=strategy, config=config, update_interval=update_interval, max_retries = max_retries)
-        
-    # async def control_task(self):
-    #     await super().control_task()
-    #     if self.status == RunnableStatus.RUNNING and not self.control_triple_barrier() and not self._stop_loss_order:
-    #         self.place_stop_loss_order()
+    
+    def place_stop_loss_order(self):
+        if not self._stop_loss_order:
+            price = self.config.start_price - (self.config.start_price * self.config.min_spread_between_orders)
+            self.logger().info(f"Executor ID: {self.config.id} - StopLossOrder Initial Price({price})")
+            connector = self.connectors[self.config.connector_name]
+            order_id = get_new_client_order_id(
+                is_buy=False,
+                trading_pair=self.config.trading_pair,
+                hbot_order_id_prefix=connector.client_order_id_prefix,
+                max_id_len=connector.client_order_id_max_length
+            )
+            price = connector.quantize_order_price(self.config.trading_pair, price)
+            safe_ensure_future(connector._create_order(
+                trade_type=TradeType.SELL,
+                order_id=order_id,
+                trading_pair=self.config.trading_pair,
+                amount=Decimal("60"),
+                order_type=OrderType.MARKET,
+                price=price,
+                position_action=PositionAction.CLOSE,
+                stop_loss=True))
+            self._stop_loss_order = TrackedOrder(order_id=order_id)
+            self.logger().info(f"Executor ID: {self.config.id} - StopLossOrder #{order_id}, Price({price})")
 
-    def stop_loss_condition(self):
-        """
-        This method is responsible for controlling the stop loss. If the net pnl percentage is less than the stop loss
-        percentage, it places the close order and cancels the open orders.
+    # def stop_loss_condition(self):
+    #     """
+    #     This method is responsible for controlling the stop loss. If the net pnl percentage is less than the stop loss
+    #     percentage, it places the close order and cancels the open orders.
 
-        :return: None
-        """
-        return self.mid_price < self.config.start_price - (self.config.start_price * self.config.min_spread_between_orders)
+    #     :return: None
+    #     """
+    #     return self.mid_price < self.config.start_price - (self.config.start_price * self.config.min_spread_between_orders)
     
     async def validate_sufficient_balance(self):
         pass    
@@ -65,6 +88,7 @@ class ComboExecutor(GridExecutor):
 
     def process_order_filled_event(self, _, market, event: OrderFilledEvent):
         super().process_order_filled_event(_, market=market, event=event)
+        self.place_stop_loss_order()
 
     def process_order_completed_event(self, _, market, event: Union[BuyOrderCompletedEvent, SellOrderCompletedEvent]):
         super().process_order_completed_event(_, market=market, event=event)

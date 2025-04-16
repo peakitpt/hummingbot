@@ -261,6 +261,17 @@ class BinancePerpetualDerivative(PerpetualDerivativePyBase):
                 api_params["positionSide"] = "LONG" if trade_type is TradeType.BUY else "SHORT"
             else:
                 api_params["positionSide"] = "SHORT" if trade_type is TradeType.BUY else "LONG"
+        
+
+        if "stop_loss" in kwargs:
+            api_params["type"] = "STOP_MARKET"
+            api_params["closePosition"] = "true"
+            api_params["stopPrice"] = price_str
+            api_params.pop("quantity", None)
+            api_params.pop("timeInForce", None)
+            api_params.pop("price", None)
+            self.logger().info(f"api_params {api_params}")
+
         try:
             order_result = await self._api_post(
                 path_url=CONSTANTS.ORDER_URL,
