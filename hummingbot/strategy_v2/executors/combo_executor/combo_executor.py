@@ -86,10 +86,13 @@ class ComboExecutor(GridExecutor):
     def process_order_completed_event(self, _, market, event: Union[BuyOrderCompletedEvent, SellOrderCompletedEvent]):
         super().process_order_completed_event(_, market=market, event=event)
         self.logger().debug(f"Executor ID: {self.config.id} - OrderCompletedEvent #{event.order_id}")
-        self.update_config_pnl()
 
     def process_order_canceled_event(self, _, market: ConnectorBase, event: OrderCancelledEvent):
         super().process_order_canceled_event(_, market=market, event=event)
+
+    def stop(self):
+        super().stop()
+        self._stop_loss_order = None
         self.update_config_pnl()
 
     def update_config_pnl(self):
