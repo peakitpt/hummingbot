@@ -27,21 +27,14 @@ from hummingbot.strategy_v2.executors.grid_executor.grid_executor import GridExe
 from hummingbot.strategy_v2.models.base import RunnableStatus
 from hummingbot.strategy_v2.models.executors import CloseType, TrackedOrder
 from hummingbot.strategy_v2.utils.distributions import Distributions
+from ruamel.yaml import YAML
+from pathlib import Path
 
 
 class ComboExecutor(GridExecutor):
     _logger = None
 
-    def __init__(self, strategy: ScriptStrategyBase, config: ComboExecutorConfig,
-                 update_interval: float = 1.0, max_retries: int = 10):
-        """
-        Initialize the PositionExecutor instance.
-
-        :param strategy: The strategy to be used by the PositionExecutor.
-        :param config: The configuration for the PositionExecutor, subclass of PositionExecutoConfig.
-        :param update_interval: The interval at which the PositionExecutor should be updated, defaults to 1.0.
-        :param max_retries: The maximum number of retries for the PositionExecutor, defaults to 5.
-        """
+    def __init__(self, strategy: ScriptStrategyBase, config: ComboExecutorConfig, update_interval: float = 1.0, max_retries: int = 10):
         self._stop_loss_order = None
         self.config: ComboExecutorConfig = config
         super().__init__(strategy=strategy, config=config, update_interval=update_interval, max_retries = max_retries)
@@ -93,11 +86,26 @@ class ComboExecutor(GridExecutor):
     def process_order_completed_event(self, _, market, event: Union[BuyOrderCompletedEvent, SellOrderCompletedEvent]):
         super().process_order_completed_event(_, market=market, event=event)
         self.logger().debug(f"Executor ID: {self.config.id} - OrderCompletedEvent #{event.order_id}")
-    #     self.close_gaps()
+        self.update_config_pnl()
 
-    # def process_order_canceled_event(self, _, market: ConnectorBase, event: OrderCancelledEvent):
-    #     super().process_order_canceled_event(_, market=market, event=event)
-    #     self.check_orders()
+    def process_order_canceled_event(self, _, market: ConnectorBase, event: OrderCancelledEvent):
+        super().process_order_canceled_event(_, market=market, event=event)
+        self.update_config_pnl()
+
+    def update_config_pnl(self):
+        current_dir = Path(__file__).resolve().parent
+        yaml = YAML()
+        file_path = f"{current_dir}/../../../../conf/controllers/{self.config.config_name}"
+        with open(file_path, 'r') as f:
+            config = yaml.load(f)
+        
+        new_pnl = float(config['pnl']) + float(self.get_net_pnl_quote())
+
+        self.logger().info(f"Executor ID: {self.config.id} - Saving new pnl from {float(config['pnl'])} to {new_pnl}")
+
+        config['pnl'] = new_pnl
+        with open(file_path, 'w') as f:
+            yaml.dump(config, f)
 
     # def process_order_failed_event(self, _, market, event: MarketOrderFailureEvent):
     #     super().process_order_failed_event(_, market=market, event=event)

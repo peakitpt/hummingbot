@@ -270,7 +270,6 @@ class BinancePerpetualDerivative(PerpetualDerivativePyBase):
             api_params.pop("quantity", None)
             api_params.pop("timeInForce", None)
             api_params.pop("price", None)
-            self.logger().info(f"api_params {api_params}")
 
         try:
             order_result = await self._api_post(

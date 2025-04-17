@@ -37,3 +37,5 @@ class ComboExecutorConfig(GridExecutorConfig):
     deduct_base_fees: bool = False
     keep_position: bool = False
     coerce_tp_to_step: bool = False
+    pnl: Decimal = Decimal("0.00")
+    config_name: str
