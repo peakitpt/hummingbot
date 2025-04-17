@@ -90,6 +90,27 @@ class ComboExecutor(GridExecutor):
     def process_order_canceled_event(self, _, market: ConnectorBase, event: OrderCancelledEvent):
         super().process_order_canceled_event(_, market=market, event=event)
 
+    def cancel_open_orders(self):
+        """
+        This method is responsible for canceling the open orders.
+
+        :return: None
+        """
+        open_order_placed = [level.active_open_order for level in
+                             self.levels_by_state[GridLevelStates.OPEN_ORDER_PLACED]]
+        close_order_placed = [level.active_close_order for level in
+                              self.levels_by_state[GridLevelStates.CLOSE_ORDER_PLACED]]
+        for order in open_order_placed + close_order_placed + [self._stop_loss_order]:
+            # TODO: Implement cancel batch orders
+            if order:
+                self._strategy.cancel(
+                    connector_name=self.config.connector_name,
+                    trading_pair=self.config.trading_pair,
+                    order_id=order.order_id
+                )
+                self.logger().debug("Removing open order")
+                self.logger().debug(f"Executor ID: {self.config.id} - Canceling open order {order.order_id}")
+
     def stop(self):
         super().stop()
         self._stop_loss_order = None
