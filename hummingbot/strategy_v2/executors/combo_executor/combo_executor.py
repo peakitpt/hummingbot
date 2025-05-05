@@ -82,6 +82,10 @@ class ComboExecutor(GridExecutor):
     def process_order_filled_event(self, _, market, event: OrderFilledEvent):
         super().process_order_filled_event(_, market=market, event=event)
         self.place_stop_loss_order()
+        if event.order_id == self._stop_loss_order.order_id:
+            self._stop_loss_order = None
+            self._status = RunnableStatus.SHUTTING_DOWN
+            self.logger().info(f"Executor ID: {self.config.id} - StopLossOrder #{event.order_id} filled")
 
     def process_order_completed_event(self, _, market, event: Union[BuyOrderCompletedEvent, SellOrderCompletedEvent]):
         super().process_order_completed_event(_, market=market, event=event)
