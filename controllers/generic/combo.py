@@ -50,6 +50,7 @@ class ComboConfig(ControllerConfigBase):
     reinvest_profit_prctg: Decimal = Field(default = Decimal("0.9"), client_data=ClientFieldData(is_updatable=True))
     risk_reduction_prctg: Decimal = Field(default = Decimal("1.0"), client_data=ClientFieldData(is_updatable=True))
     config_name: Optional[str] = Field(default = None)
+    use_exchange_stop_loss: bool = Field(default = True)
 
     @property
     def triple_barrier_config(self) -> TripleBarrierConfig:
@@ -113,6 +114,7 @@ class Combo(ControllerBase):
                     order_frequency = 10, #self.config.order_frequency,
                     activation_bounds = None, #self.config.activation_bounds,
                     triple_barrier_config = self.config.triple_barrier_config,
+                    use_exchange_stop_loss = self.config.use_exchange_stop_loss,
                     level_id=None))]
         return []
 

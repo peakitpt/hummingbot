@@ -63,14 +63,14 @@ class ComboExecutor(GridExecutor):
             self._stop_loss_order = TrackedOrder(order_id=order_id)
             self.logger().info(f"Executor ID: {self.config.id} - StopLossOrder #{order_id}, Price({price})")
 
-    # def stop_loss_condition(self):
-    #     """
-    #     This method is responsible for controlling the stop loss. If the net pnl percentage is less than the stop loss
-    #     percentage, it places the close order and cancels the open orders.
+    def stop_loss_condition(self):
+        """
+        This method is responsible for controlling the stop loss. If the net pnl percentage is less than the stop loss
+        percentage, it places the close order and cancels the open orders.
 
-    #     :return: None
-    #     """
-    #     return self.mid_price < self.config.start_price - (self.config.start_price * self.config.min_spread_between_orders)
+        :return: None
+        """
+        return not self._stop_loss_order and self.mid_price < self.config.start_price - (self.config.start_price * self.config.min_spread_between_orders)
     
     async def validate_sufficient_balance(self):
         pass    
@@ -81,11 +81,12 @@ class ComboExecutor(GridExecutor):
 
     def process_order_filled_event(self, _, market, event: OrderFilledEvent):
         super().process_order_filled_event(_, market=market, event=event)
-        self.place_stop_loss_order()
-        if event.order_id == self._stop_loss_order.order_id:
-            self._stop_loss_order = None
-            self._status = RunnableStatus.SHUTTING_DOWN
-            self.logger().info(f"Executor ID: {self.config.id} - StopLossOrder #{event.order_id} filled")
+        if self.config.use_exchange_stop_loss:
+            self.place_stop_loss_order()
+            if event.order_id == self._stop_loss_order.order_id:
+                self._stop_loss_order = None
+                self._status = RunnableStatus.SHUTTING_DOWN
+                self.logger().info(f"Executor ID: {self.config.id} - StopLossOrder #{event.order_id} filled")
 
     def process_order_completed_event(self, _, market, event: Union[BuyOrderCompletedEvent, SellOrderCompletedEvent]):
         super().process_order_completed_event(_, market=market, event=event)
@@ -104,7 +105,12 @@ class ComboExecutor(GridExecutor):
                              self.levels_by_state[GridLevelStates.OPEN_ORDER_PLACED]]
         close_order_placed = [level.active_close_order for level in
                               self.levels_by_state[GridLevelStates.CLOSE_ORDER_PLACED]]
-        for order in open_order_placed + close_order_placed + [self._stop_loss_order]:
+        
+        orders = open_order_placed + close_order_placed
+        if self.config.use_exchange_stop_loss and self._stop_loss_order:
+            orders.append(self._stop_loss_order)
+
+        for order in orders:
             # TODO: Implement cancel batch orders
             if order:
                 self._strategy.cancel(

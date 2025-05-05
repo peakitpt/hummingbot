@@ -39,3 +39,4 @@ class ComboExecutorConfig(GridExecutorConfig):
     coerce_tp_to_step: bool = False
     pnl: Decimal = Decimal("0.00")
     config_name: str
+    use_exchange_stop_loss: bool = False
